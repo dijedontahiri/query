@@ -1,7 +1,7 @@
 'use client'
 import * as React from 'react'
 
-import { hydrate } from '@tanstack/query-core'
+import { hydrate, notifyManager } from '@tanstack/query-core'
 import { HydrationBoundaryContext } from './HydrationBoundaryContext'
 import { useQueryClient } from './QueryClientProvider'
 import type {
@@ -184,8 +184,19 @@ export const HydrationBoundary = ({
   React.useEffect(() => {
     if (hydrationQueue) {
       hydrate(client, { queries: hydrationQueue }, optionsRef.current)
-      setHydratedQueue(hydrationQueue)
+
+      let cancelled = false
+      notifyManager.schedule(() => {
+        if (!cancelled) {
+          setHydratedQueue(hydrationQueue)
+        }
+      })
+
+      return () => {
+        cancelled = true
+      }
     }
+    return undefined
   }, [client, hydrationQueue])
 
   return (
