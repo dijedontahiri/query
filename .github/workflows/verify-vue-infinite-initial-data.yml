@@ -16,8 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: a53ea730a61488433740203d83c1d4e85abcbe51
-          fetch-depth: 2
+          ref: d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -68,11 +68,7 @@ jobs:
       - name: Formatting and clean-head audit
         if: always() && steps.install.outcome == 'success'
         run: |
-          if ! pnpm exec prettier --check packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md; then
-            pnpm exec prettier --write packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md
-            git diff
-            exit 1
-          fi
+          pnpm exec prettier --check packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md
           git diff --check
           git diff --exit-code
-          test "$(git rev-parse HEAD)" = a53ea730a61488433740203d83c1d4e85abcbe51
+          test "$(git rev-parse HEAD)" = d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac
