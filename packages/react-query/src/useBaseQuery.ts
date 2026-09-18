@@ -2,6 +2,7 @@
 import * as React from 'react'
 
 import { noop, notifyManager } from '@tanstack/query-core'
+import { HydrationBoundaryContext } from './HydrationBoundaryContext'
 import { useQueryClient } from './QueryClientProvider'
 import { useQueryErrorResetBoundary } from './QueryErrorResetBoundary'
 import {
@@ -49,6 +50,7 @@ export function useBaseQuery<
   }
 
   const isRestoring = useIsRestoring()
+  const pendingHydration = React.useContext(HydrationBoundaryContext)
   const errorResetBoundary = useQueryErrorResetBoundary()
   const client = useQueryClient(queryClient)
   const defaultedOptions = client.defaultQueryOptions(options)
@@ -94,7 +96,9 @@ export function useBaseQuery<
   // note: this must be called before useSyncExternalStore
   const result = observer.getOptimisticResult(defaultedOptions)
 
-  const shouldSubscribe = !isRestoring && subscribed
+  const isPendingHydration =
+    pendingHydration.get(client)?.has(defaultedOptions.queryHash) ?? false
+  const shouldSubscribe = !isRestoring && subscribed && !isPendingHydration
   React.useSyncExternalStore(
     React.useCallback(
       (onStoreChange) => {
