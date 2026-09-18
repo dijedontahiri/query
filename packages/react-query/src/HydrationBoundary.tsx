@@ -2,6 +2,7 @@
 import * as React from 'react'
 
 import { hydrate } from '@tanstack/query-core'
+import { HydrationBoundaryContext } from './HydrationBoundaryContext'
 import { useQueryClient } from './QueryClientProvider'
 import type {
   DehydratedState,
@@ -90,6 +91,10 @@ export const HydrationBoundary = ({
   queryClient,
 }: HydrationBoundaryProps) => {
   const client = useQueryClient(queryClient)
+  const parentHydration = React.useContext(HydrationBoundaryContext)
+  const [hydratedQueue, setHydratedQueue] = React.useState<
+    DehydratedState['queries'] | undefined
+  >()
 
   const optionsRef = React.useRef(options)
   React.useEffect(() => {
@@ -161,11 +166,31 @@ export const HydrationBoundary = ({
       return undefined
     }, [client, state])
 
+  const pendingHydration = React.useMemo(() => {
+    if (!hydrationQueue || hydrationQueue === hydratedQueue) {
+      return parentHydration
+    }
+
+    const pendingForClient = new Set(parentHydration.get(client))
+    for (const query of hydrationQueue) {
+      pendingForClient.add(query.queryHash)
+    }
+
+    const next = new Map(parentHydration)
+    next.set(client, pendingForClient)
+    return next
+  }, [client, hydratedQueue, hydrationQueue, parentHydration])
+
   React.useEffect(() => {
     if (hydrationQueue) {
       hydrate(client, { queries: hydrationQueue }, optionsRef.current)
+      setHydratedQueue(hydrationQueue)
     }
   }, [client, hydrationQueue])
 
-  return children as React.ReactElement
+  return (
+    <HydrationBoundaryContext.Provider value={pendingHydration}>
+      {children}
+    </HydrationBoundaryContext.Provider>
+  )
 }
