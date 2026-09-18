@@ -45,7 +45,7 @@ jobs:
           import re
           from pathlib import Path
           log = re.sub(r'\x1b\[[0-9;]*m', '', Path('/tmp/vue-before.log').read_text())
-          errors = [line for line in log.splitlines() if re.search(r'error TS\d+:', line)]
+          errors = [line for line in log.splitlines() if re.search(r'\bTS\d+:', line)]
           assert errors, 'Expected compiler diagnostics, not an infrastructure failure'
           assert all('infiniteQueryOptions.initialData.test-d.ts' in line for line in errors), '\n'.join(errors)
           print(f'Confirmed {len(errors)} compiler diagnostics, all in the new regression file')
