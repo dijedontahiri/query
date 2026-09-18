@@ -27,16 +27,18 @@ jobs:
         run: |
           npm install --global pnpm@11.9.0
           pnpm install --frozen-lockfile
-      - name: Build type-test dependencies
+      - name: Build production declarations for Vue type tests
         id: prerequisites
-        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
+        run: |
+          echo 'Focused Vue validation: query-core production declarations are prerequisites; this run does not certify the query-core test matrix.' >> "$GITHUB_STEP_SUMMARY"
+          pnpm --filter @tanstack/query-core exec tsc --project tsconfig.prod.json --rootDir . --outDir ./dist-ts
       - name: Prove the regression against original production source
         run: |
           source=packages/vue-query/src/infiniteQueryOptions.ts
           trap 'git restore -- "$source"' EXIT
           git show d346e85f0144eb9b991e6e1665b22f4574de9751:"$source" > "$source"
           set +e
-          pnpm nx run @tanstack/vue-query:test:types --skip-nx-cache > /tmp/vue-before.log 2>&1
+          pnpm nx run @tanstack/vue-query:test:types --excludeTaskDependencies --skip-nx-cache > /tmp/vue-before.log 2>&1
           status=$?
           set -e
           cat /tmp/vue-before.log
@@ -52,16 +54,16 @@ jobs:
           PY
       - name: Complete Vue type compiler matrix
         if: always() && steps.prerequisites.outcome == 'success'
-        run: pnpm nx run @tanstack/vue-query:test:types --skip-nx-cache
+        run: pnpm nx run @tanstack/vue-query:test:types --excludeTaskDependencies --skip-nx-cache
       - name: Current TypeScript compiler
         if: always() && steps.prerequisites.outcome == 'success'
-        run: pnpm nx run @tanstack/vue-query:test:types:tscurrent --skip-nx-cache
+        run: pnpm nx run @tanstack/vue-query:test:types:tscurrent --excludeTaskDependencies --skip-nx-cache
       - name: Vue 2, 2.7 and 3 unit suites
         if: always() && steps.prerequisites.outcome == 'success'
-        run: pnpm nx run @tanstack/vue-query:test:lib --skip-nx-cache
+        run: pnpm nx run @tanstack/vue-query:test:lib --excludeTaskDependencies --skip-nx-cache
       - name: Package lint
         if: always() && steps.prerequisites.outcome == 'success'
-        run: pnpm nx run @tanstack/vue-query:test:eslint --skip-nx-cache
+        run: pnpm nx run @tanstack/vue-query:test:eslint --excludeTaskDependencies --skip-nx-cache
       - name: Package build and publication checks
         if: always() && steps.prerequisites.outcome == 'success'
         run: pnpm nx run @tanstack/vue-query:test:build --skip-nx-cache
