@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import * as React from 'react'
 import { render, screen } from '@testing-library/react'
 import { sleep } from '@tanstack/query-test-utils'
 import {
