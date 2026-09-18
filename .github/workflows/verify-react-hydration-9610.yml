@@ -1,0 +1,111 @@
+name: Verify React hydration 9610
+
+on:
+  push:
+    branches:
+      - validate/react-hydration-9610-20260919
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      CANDIDATE_SHA: 6b2991aaa6e01183315235f026d271a19652dcef
+      NO_COLOR: '1'
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify checkout and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          echo "candidate=$CANDIDATE_SHA"
+          echo "base=$BASE_SHA"
+          df -h .
+          cat .nvmrc
+          node --version || true
+
+      - name: Setup Node from repository
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+          node --version
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prove baseline regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout "$BASE_SHA" -- packages/react-query/src/HydrationBoundary.tsx packages/react-query/src/useBaseQuery.ts
+          set +e
+          pnpm nx run @tanstack/react-query:test:lib -- HydrationBoundary.refetch.test.tsx > /tmp/negative.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/negative.log
+          if [ "$status" -eq 0 ]; then
+            echo "negative control unexpectedly passed"
+            exit 1
+          fi
+          grep -F "should wait for newer hydration before deciding refetchOnMount" /tmp/negative.log
+          grep -E "1 failed|1 failed.*2 passed|Tests.*1 failed" /tmp/negative.log
+          git checkout "$CANDIDATE_SHA" -- packages/react-query/src/HydrationBoundary.tsx packages/react-query/src/useBaseQuery.ts
+          git diff --exit-code
+
+      - name: Run focused regression on fixed tree
+        run: pnpm nx run @tanstack/react-query:test:lib -- HydrationBoundary.refetch.test.tsx
+
+      - name: Run React Query library tests
+        run: pnpm nx run @tanstack/react-query:test:lib --skip-nx-cache
+
+      - name: Run React Query type tests
+        run: pnpm nx run @tanstack/react-query:test:types --skip-nx-cache
+
+      - name: Run React Query lint
+        run: pnpm nx run @tanstack/react-query:test:eslint --skip-nx-cache
+
+      - name: Run React Query build checks
+        run: pnpm nx run @tanstack/react-query:test:build --skip-nx-cache
+
+      - name: Verify generated docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run generate-docs
+          if ! git diff --exit-code; then
+            echo "Generated docs differ from candidate tree"
+            git diff -- docs/framework/react/reference
+            exit 1
+          fi
+
+      - name: Run affected PR checks
+        run: pnpm run test:pr --base=$BASE_SHA --head=$CANDIDATE_SHA --skip-nx-cache --parallel=2
+
+      - name: Check formatting and exact scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec prettier --check packages/react-query/src/HydrationBoundary.tsx packages/react-query/src/HydrationBoundaryContext.ts packages/react-query/src/useBaseQuery.ts packages/react-query/src/__tests__/HydrationBoundary.refetch.test.tsx .changeset/fuzzy-hydration-waits.md
+          git diff --check "$BASE_SHA" "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA"
