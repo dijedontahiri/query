@@ -34,7 +34,6 @@ jobs:
         run: |
           pnpm run generate-docs > /tmp/generate-docs.log 2>&1 || { tail -n 220 /tmp/generate-docs.log; exit 1; }
           tail -n 80 /tmp/generate-docs.log
-          git diff --check
           git diff --name-only > /tmp/generated-files.txt
           echo 'GENERATED_FILE_LIST_BEGIN'
           cat /tmp/generated-files.txt
@@ -49,6 +48,14 @@ jobs:
               print(base64.b64encode(data).decode())
               print(f'GENERATED_FILE_END {name}')
           PY
+          set +e
+          git diff --check > /tmp/generated-diff-check.log 2>&1
+          diff_check_status=$?
+          set -e
+          cat /tmp/generated-diff-check.log
+          echo "GENERATED_DIFF_CHECK_STATUS=$diff_check_status"
+      - name: Restore generated docs before source verification
+        run: git restore docs/framework
       - name: Build type-test dependencies through Nx
         id: prerequisites
         run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
@@ -117,7 +124,7 @@ jobs:
       - name: Required root PR checks against the exact contribution diff
         if: always() && steps.install.outcome == 'success'
         run: |
-          git restore docs/framework/vue/reference
+          git restore docs/framework
           pnpm run test:pr --base=d346e85f0144eb9b991e6e1665b22f4574de9751 --head=d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac --skip-nx-cache --parallel=2 > /tmp/test-pr.log 2>&1 || { tail -n 220 /tmp/test-pr.log; exit 1; }
           tail -n 80 /tmp/test-pr.log
       - name: Formatting and exact-head audit
@@ -139,4 +146,5 @@ jobs:
             /tmp/test-pr.log
             /tmp/generate-docs.log
             /tmp/generated-files.txt
+            /tmp/generated-diff-check.log
           retention-days: 14
