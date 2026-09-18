@@ -1,0 +1,114 @@
+name: Audit contribution readiness
+on:
+  push:
+    branches: [audit/contribution-readiness-20260918]
+    paths: [.github/workflows/audit-contribution-readiness.yml]
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+jobs:
+  audit:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read public PR metadata, checks, reviews and validation jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p audit
+          python3 - <<'PY'
+          import concurrent.futures, datetime, json, os, re, urllib.request, urllib.error
+          from pathlib import Path
+          targets = {
+              'strapi/strapi': [26488, 27698, 27699, 27701, 27702, 27704, 27706, 27707, 27708, 27713, 27715, 27716],
+              'QwenLM/qwen-code': [12115, 12156, 12191],
+              'TanStack/query': [11539],
+          }
+          def get(path):
+              req = urllib.request.Request('https://api.github.com/' + path, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json',
+                  'User-Agent': 'contribution-readiness-audit',
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  return {'audit_error': exc.code, 'path': path}
+              except Exception as exc:
+                  return {'audit_error': type(exc).__name__, 'path': path}
+          def pages(path, key=None):
+              items = []
+              for page in range(1, 21):
+                  separator = '&' if '?' in path else '?'
+                  response = get(path + separator + f'per_page=100&page={page}')
+                  if isinstance(response, dict) and 'audit_error' in response:
+                      return {'partial_items': items, **response}
+                  batch = response[key] if key else response
+                  items.extend(batch)
+                  if len(batch) < 100:
+                      return items
+              return {'partial_items': items, 'audit_error': 'pagination_limit', 'path': path}
+          def inspect(target):
+              repo, number = target
+              root = f'repos/{repo}'
+              pr = get(f'{root}/pulls/{number}')
+              if 'audit_error' in pr:
+                  return {'repo': repo, 'number': number, 'error': pr}
+              assert pr['user']['login'] == 'dijedontahiri'
+              record = {'repo': repo, 'number': number, 'pr': pr}
+              for label, path in {
+                  'reviews': f'{root}/pulls/{number}/reviews',
+                  'review_comments': f'{root}/pulls/{number}/comments',
+                  'comments': f'{root}/issues/{number}/comments',
+                  'files': f'{root}/pulls/{number}/files',
+              }.items():
+                  record[label] = pages(path)
+              sha = pr['head']['sha']
+              record['statuses'] = get(f'{root}/commits/{sha}/status')
+              record['checks'] = pages(f'{root}/commits/{sha}/check-runs', 'check_runs')
+              record['upstream_runs'] = pages(f'{root}/actions/runs?head_sha={sha}', 'workflow_runs')
+              if pr.get('merge_commit_sha'):
+                  record['merge_checks'] = pages(f'{root}/commits/{pr["merge_commit_sha"]}/check-runs', 'check_runs')
+              refs = sorted(set(re.findall(r'https://github\.com/(dijedontahiri/(?:strapi|query|qwen-code))/actions/runs/(\d+)', pr.get('body') or '')))
+              record['validation_runs'] = []
+              for fork, runid in refs:
+                  runroot = f'repos/{fork}/actions/runs/{runid}'
+                  run = get(runroot)
+                  if 'audit_error' not in run:
+                      run = {k: run.get(k) for k in ('id','name','head_branch','head_sha','status','conclusion','html_url','created_at','updated_at','path')}
+                      run['repo'] = fork
+                      run['jobs'] = pages(runroot + '/jobs', 'jobs')
+                  record['validation_runs'].append(run)
+              latest = {}
+              if isinstance(record['reviews'], list):
+                  for review in record['reviews']:
+                      if review['state'] in ('APPROVED','CHANGES_REQUESTED','DISMISSED'):
+                          latest[review['user']['login']] = review['state']
+              summary = {
+                  'repo': repo, 'number': number, 'state': pr['state'], 'draft': pr['draft'],
+                  'mergeable': pr['mergeable'], 'mergeable_state': pr['mergeable_state'],
+                  'head': sha, 'reviews': latest,
+                  'status_checks': [(x['context'],x['state'],x.get('description')) for x in record['statuses'].get('statuses',[])],
+                  'checks': [(x['name'],x['status'],x['conclusion']) for x in record['checks']] if isinstance(record['checks'],list) else record['checks'],
+                  'runs': [(x['name'],x['status'],x['conclusion']) for x in record['upstream_runs']] if isinstance(record['upstream_runs'],list) else record['upstream_runs'],
+                  'validation': [(x.get('id'),x.get('conclusion')) for x in record['validation_runs']],
+              }
+              print(json.dumps(summary))
+              return record
+          flat = [(repo, number) for repo,numbers in targets.items() for number in numbers]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              records = list(pool.map(inspect, flat))
+          output = {'checked_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'prs': records}
+          Path('audit/readiness.json').write_text(json.dumps(output, indent=2))
+          print('Audited', len(records), 'existing external PRs; no upstream or contribution branches were modified.')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: contribution-readiness
+          path: audit/readiness.json
+          retention-days: 14
+          if-no-files-found: error
