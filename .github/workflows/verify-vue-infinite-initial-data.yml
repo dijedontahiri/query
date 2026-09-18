@@ -29,7 +29,7 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Build type-test dependencies
         id: prerequisites
-        run: pnpm nx run @tanstack/query-test-utils:compile --skip-nx-cache
+        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
       - name: Prove the regression against original production source
         run: |
           source=packages/vue-query/src/infiniteQueryOptions.ts
@@ -68,7 +68,11 @@ jobs:
       - name: Formatting and clean-head audit
         if: always() && steps.install.outcome == 'success'
         run: |
-          pnpm exec prettier --check packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md
+          if ! pnpm exec prettier --check packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md; then
+            pnpm exec prettier --write packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md
+            git diff
+            exit 1
+          fi
           git diff --check
           git diff --exit-code
           test "$(git rev-parse HEAD)" = a53ea730a61488433740203d83c1d4e85abcbe51
