@@ -1,0 +1,74 @@
+name: Verify Vue infinite initial data
+on:
+  push:
+    branches: [validate/vue-infinite-initial-data-20260918]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CI: true
+      NX_DAEMON: false
+      NX_NO_CLOUD: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a53ea730a61488433740203d83c1d4e85abcbe51
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - name: Install pinned dependencies
+        id: install
+        run: |
+          npm install --global pnpm@11.9.0
+          pnpm install --frozen-lockfile
+      - name: Build type-test dependencies
+        id: prerequisites
+        run: pnpm nx run @tanstack/query-test-utils:compile --skip-nx-cache
+      - name: Prove the regression against original production source
+        run: |
+          source=packages/vue-query/src/infiniteQueryOptions.ts
+          trap 'git restore -- "$source"' EXIT
+          git show d346e85f0144eb9b991e6e1665b22f4574de9751:"$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/vue-query:test:types --skip-nx-cache > /tmp/vue-before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/vue-before.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          log = re.sub(r'\x1b\[[0-9;]*m', '', Path('/tmp/vue-before.log').read_text())
+          errors = [line for line in log.splitlines() if re.search(r'error TS\d+:', line)]
+          assert errors, 'Expected compiler diagnostics, not an infrastructure failure'
+          assert all('infiniteQueryOptions.initialData.test-d.ts' in line for line in errors), '\n'.join(errors)
+          print(f'Confirmed {len(errors)} compiler diagnostics, all in the new regression file')
+          PY
+      - name: Complete Vue type compiler matrix
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: pnpm nx run @tanstack/vue-query:test:types --skip-nx-cache
+      - name: Current TypeScript compiler
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: pnpm nx run @tanstack/vue-query:test:types:tscurrent --skip-nx-cache
+      - name: Vue 2, 2.7 and 3 unit suites
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: pnpm nx run @tanstack/vue-query:test:lib --skip-nx-cache
+      - name: Package lint
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: pnpm nx run @tanstack/vue-query:test:eslint --skip-nx-cache
+      - name: Package build and publication checks
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: pnpm nx run @tanstack/vue-query:test:build --skip-nx-cache
+      - name: Formatting and clean-head audit
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm exec prettier --check packages/vue-query/src/infiniteQueryOptions.ts packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts .changeset/tidy-cats-wait.md
+          git diff --check
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = a53ea730a61488433740203d83c1d4e85abcbe51
