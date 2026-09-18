@@ -39,7 +39,7 @@ jobs:
           trap 'git restore -- "$source"' EXIT
           git show d346e85f0144eb9b991e6e1665b22f4574de9751:"$source" > "$source"
           set +e
-          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache --args="--typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-before.json infiniteQueryOptions.initialData.test-d.ts" > /tmp/vue-before.log 2>&1
+          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache -- --typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-before.json infiniteQueryOptions.initialData.test-d.ts > /tmp/vue-before.log 2>&1
           status=$?
           set -e
           cat /tmp/vue-before.log
@@ -65,7 +65,7 @@ jobs:
           print('Verified original source: exactly 3 intended regression failures and 3 passing controls.')
           PY
           git restore -- "$source"
-          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache --args="--typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-after.json infiniteQueryOptions.initialData.test-d.ts" > /tmp/vue-after.log 2>&1
+          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache -- --typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-after.json infiniteQueryOptions.initialData.test-d.ts > /tmp/vue-after.log 2>&1
           cat /tmp/vue-after.log
           python3 - <<'PY'
           import json
@@ -107,3 +107,13 @@ jobs:
           git diff --exit-code
           test "$(git rev-parse HEAD)" = d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac
           test "$(git diff --name-only d346e85f0144eb9b991e6e1665b22f4574de9751 HEAD | wc -l)" -eq 3
+      - name: Save full verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vue-infinite-initial-data-evidence
+          path: |
+            /tmp/vue-*.json
+            /tmp/vue-*.log
+            /tmp/test-pr.log
+          retention-days: 14
