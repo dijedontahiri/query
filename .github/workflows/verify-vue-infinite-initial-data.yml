@@ -1,57 +1,152 @@
-name: Capture Vue generated docs
+name: Verify Vue optional infinite initial data final tree
 on:
   push:
     branches: [validate/vue-infinite-initial-data-20260918]
 permissions:
   contents: read
 jobs:
-  capture:
+  verify:
     if: github.repository == 'dijedontahiri/query'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       CI: true
       NX_DAEMON: false
       NX_NO_CLOUD: true
       NX_TUI: false
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      CANDIDATE_SHA: 0d46d43a0383710840253eea6cbc5d428c31b3d6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac
+          ref: 0d46d43a0383710840253eea6cbc5d428c31b3d6
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .nvmrc
-      - name: Install pinned dependencies
+      - name: Install pinned dependencies and verify exact checkout
+        id: install
         run: |
           npm install --global pnpm@11.9.0
           pnpm install --frozen-lockfile
-          test "$(git rev-parse HEAD)" = d0a4a8f15a1dafe6db4fa9c1c705e6a3fd9f9fac
-      - name: Generate and capture exact changed reference docs
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
+      - name: Verify committed generated reference docs reproduce
+        id: docs
         run: |
-          pnpm run generate-docs
-          git diff --name-only > /tmp/generated-files.txt
-          test "$(wc -l < /tmp/generated-files.txt)" -eq 3
-          grep -Fx 'docs/framework/vue/reference/functions/infiniteQueryOptions.md' /tmp/generated-files.txt
-          grep -Fx 'docs/framework/vue/reference/type-aliases/DefinedInitialDataInfiniteOptions.md' /tmp/generated-files.txt
-          grep -Fx 'docs/framework/vue/reference/type-aliases/UndefinedInitialDataInfiniteOptions.md' /tmp/generated-files.txt
-          mkdir -p /tmp/generated-docs
-          while IFS= read -r file; do
-            mkdir -p "/tmp/generated-docs/$(dirname "$file")"
-            cp "$file" "/tmp/generated-docs/$file"
-          done < /tmp/generated-files.txt
+          pnpm run generate-docs > /tmp/generate-docs.log 2>&1 || { tail -n 220 /tmp/generate-docs.log; exit 1; }
           python3 - <<'PY'
           from pathlib import Path
-          for path in Path('/tmp/generated-docs').rglob('*.md'):
+          paths = [
+              Path('docs/framework/vue/reference/functions/infiniteQueryOptions.md'),
+              Path('docs/framework/vue/reference/type-aliases/DefinedInitialDataInfiniteOptions.md'),
+              Path('docs/framework/vue/reference/type-aliases/UndefinedInitialDataInfiniteOptions.md'),
+          ]
+          for path in paths:
               text = path.read_text()
               path.write_text('\n'.join(line.rstrip() for line in text.splitlines()) + ('\n' if text.endswith('\n') else ''))
           PY
-          grep -n 'optional initialData:' /tmp/generated-docs/docs/framework/vue/reference/type-aliases/UndefinedInitialDataInfiniteOptions.md
-          git diff --check || true
-      - name: Upload generated reference docs
+          git diff --check
+          git diff --exit-code
+          grep -F 'UndefinedInitialDataInfiniteOptions<TQueryFnData' docs/framework/vue/reference/functions/infiniteQueryOptions.md
+          grep -F 'optional initialData:' docs/framework/vue/reference/type-aliases/UndefinedInitialDataInfiniteOptions.md
+      - name: Build type-test dependencies through Nx
+        id: prerequisites
+        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
+      - name: Prove baseline regression and fixed behavior
+        id: regression
+        run: |
+          source=packages/vue-query/src/infiniteQueryOptions.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache -- --typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-before.json infiniteQueryOptions.initialData.test-d.ts > /tmp/vue-before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/vue-before.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/vue-before.json').read_text())
+          assert result['numTotalTests'] == 6, result
+          assert result['numFailedTests'] == 3, result
+          assert result['numPassedTests'] == 3, result
+          assert result.get('numRuntimeErrorTestSuites', 0) == 0, result
+          suites = result['testResults']
+          assert len(suites) == 1, suites
+          assert suites[0]['name'].endswith('infiniteQueryOptions.initialData.test-d.ts'), suites
+          expected = {
+              'accepts data that may be undefined without losing page inference',
+              'accepts an initializer that may return undefined',
+              'preserves select inference when initial data is optional',
+          }
+          failed = {case['title'] for case in suites[0]['assertionResults'] if case['status'] == 'failed'}
+          assert failed == expected, failed
+          print('Verified baseline: exactly 3 intended regression failures and 3 passing controls.')
+          PY
+          git restore -- "$source"
+          pnpm nx run @tanstack/vue-query:test:lib:3 --skip-nx-cache -- --typecheck.only --coverage.enabled=false --reporter=json --outputFile=/tmp/vue-after.json infiniteQueryOptions.initialData.test-d.ts > /tmp/vue-after.log 2>&1
+          cat /tmp/vue-after.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/vue-after.json').read_text())
+          assert result['success'], result
+          assert result['numTotalTests'] == 6 and result['numPassedTests'] == 6, result
+          assert result['numFailedTests'] == 0, result
+          print('Verified final source: all 6 type cases pass.')
+          PY
+      - name: Complete Vue compiler matrix
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/vue-query:test:types --skip-nx-cache > /tmp/vue-compilers.log 2>&1 || { tail -n 180 /tmp/vue-compilers.log; exit 1; }
+          tail -n 40 /tmp/vue-compilers.log
+          pnpm nx run @tanstack/vue-query:test:types:tscurrent --skip-nx-cache > /tmp/vue-current.log 2>&1 || { tail -n 180 /tmp/vue-current.log; exit 1; }
+          tail -n 25 /tmp/vue-current.log
+      - name: Complete Vue 2, 2.7 and 3 runtime and type-test suites
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/vue-query:test:lib --skip-nx-cache > /tmp/vue-tests.log 2>&1 || { tail -n 220 /tmp/vue-tests.log; exit 1; }
+          grep -E 'Test Files|Tests |Type Errors|Successfully ran' /tmp/vue-tests.log
+      - name: Package lint and publication checks
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/vue-query:test:eslint --skip-nx-cache > /tmp/vue-lint.log 2>&1 || { tail -n 180 /tmp/vue-lint.log; exit 1; }
+          tail -n 30 /tmp/vue-lint.log
+          pnpm nx run @tanstack/vue-query:test:build --skip-nx-cache > /tmp/vue-build.log 2>&1 || { tail -n 180 /tmp/vue-build.log; exit 1; }
+          tail -n 35 /tmp/vue-build.log
+      - name: Required root PR checks on exact final tree
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2 > /tmp/test-pr.log 2>&1 || { tail -n 260 /tmp/test-pr.log; exit 1; }
+          tail -n 100 /tmp/test-pr.log
+      - name: Final diff, formatting, changeset and exact-head audit
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm exec prettier --check \
+            packages/vue-query/src/infiniteQueryOptions.ts \
+            packages/vue-query/src/__tests__/infiniteQueryOptions.initialData.test-d.ts \
+            .changeset/tidy-cats-wait.md \
+            docs/framework/vue/reference/functions/infiniteQueryOptions.md \
+            docs/framework/vue/reference/type-aliases/DefinedInitialDataInfiniteOptions.md \
+            docs/framework/vue/reference/type-aliases/UndefinedInitialDataInfiniteOptions.md
+          git diff --check
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | wc -l)" -eq 6
+          test "$(git diff --name-only "$BASE_SHA" HEAD | sort | uniq | wc -l)" -eq 6
+          test -f .changeset/tidy-cats-wait.md
+          git diff --name-only "$BASE_SHA" HEAD
+      - name: Save verification evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: vue-generated-reference-docs
-          path: /tmp/generated-docs
+          name: vue-infinite-initial-data-final-evidence
+          path: |
+            /tmp/vue-*.json
+            /tmp/vue-*.log
+            /tmp/test-pr.log
+            /tmp/generate-docs.log
           retention-days: 14
