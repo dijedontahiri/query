@@ -15,11 +15,11 @@ jobs:
       NX_NO_CLOUD: true
       NX_TUI: false
       BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
-      CANDIDATE_SHA: b47c2fbc3f6a373a21bfb1db456f670f2fb29365
+      CANDIDATE_SHA: d4dce74b5a7afcf702175374467358b290adb412
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b47c2fbc3f6a373a21bfb1db456f670f2fb29365
+          ref: d4dce74b5a7afcf702175374467358b290adb412
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
