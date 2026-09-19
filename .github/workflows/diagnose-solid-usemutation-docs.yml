@@ -1,0 +1,39 @@
+name: Diagnose Solid useMutation generated docs
+on:
+  push:
+    branches: [validate/diagnose-solid-usemutation-docs-20260919]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: true
+      NX_DAEMON: false
+      NX_NO_CLOUD: true
+      NX_TUI: false
+      CANDIDATE_SHA: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - run: |
+          npm install --global pnpm@11.9.0
+          pnpm install --frozen-lockfile
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Generate and print exact docs diff
+        run: |
+          pnpm run generate-docs
+          echo '--- changed files ---'
+          git status --short
+          echo '--- generated diff ---'
+          git diff -- docs/framework/solid/reference packages/solid-query || true
+          echo '--- all diff stats ---'
+          git diff --stat
