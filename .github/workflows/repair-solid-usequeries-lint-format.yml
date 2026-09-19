@@ -49,12 +49,15 @@ jobs:
           corepack prepare pnpm@11.9.0 --activate
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Format and verify repair before publication
+      - name: Format repaired files
         shell: bash
         run: |
           pnpm exec prettier --write packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
           git diff --check
           git diff -- packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+      - name: Verify repair before publication
+        shell: bash
+        run: |
           pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx
           pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
           pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
