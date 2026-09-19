@@ -51,7 +51,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify repair before publication
         run: |
-          pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx
           pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
           pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
       - name: Commit and fast-forward push
