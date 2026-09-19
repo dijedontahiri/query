@@ -15,7 +15,8 @@ jobs:
     timeout-minutes: 45
     env:
       BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
-      CANDIDATE_SHA: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
+      ORIGINAL_CANDIDATE_SHA: 36990befc39232df24b016b204d393f6d412487d
+      CANDIDATE_SHA: 0606ea9da15f4f8fbc761ffb0aca6593729d6b48
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +26,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$ORIGINAL_CANDIDATE_SHA^{commit}"
       - uses: actions/setup-node@v4
         with:
           node-version: 24.16.0
@@ -38,16 +40,42 @@ jobs:
       - name: Baseline negative control
         shell: bash
         run: |
-          git show "$BASE_SHA:packages/solid-query/src/useMutation.ts" > packages/solid-query/src/useMutation.ts
+          source=packages/solid-query/src/useMutation.ts
+          trap 'git checkout "$CANDIDATE_SHA" -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
           set +e
-          pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx 2>&1 | tee /tmp/baseline.log
-          code=${PIPESTATUS[0]}
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/base.json > /tmp/base.log 2>&1
+          code=$?
           set -e
+          cat /tmp/base.log
           test "$code" -ne 0
-          grep -q "should use the current queryClient after the accessor changes" /tmp/baseline.log
-          git checkout "$CANDIDATE_SHA" -- packages/solid-query/src/useMutation.ts
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/base.json').read_text())
+          assertions={a['title']:a['status'] for a in r['testResults'][0]['assertionResults']}
+          assert assertions['should use the current queryClient after the accessor changes']=='failed', assertions
+          assert assertions['should stop retained per-call callbacks when the component unmounts']=='passed', assertions
+          PY
+          git show "$ORIGINAL_CANDIDATE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/review.json > /tmp/review.log 2>&1
+          review_code=$?
+          set -e
+          cat /tmp/review.log
+          test "$review_code" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/review.json').read_text())
+          assertions={a['title']:a['status'] for a in r['testResults'][0]['assertionResults']}
+          assert assertions['should use the current queryClient after the accessor changes']=='passed', assertions
+          assert assertions['should preserve per-call callbacks for an in-flight mutation after switching clients']=='failed', assertions
+          assert assertions['should stop retained per-call callbacks when the component unmounts']=='passed', assertions
+          PY
+          git checkout "$CANDIDATE_SHA" -- "$source"
       - name: Focused regression on final tree
-        run: pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx
+        run: pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx
       - name: Solid Query full validation
         run: |
           pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache
