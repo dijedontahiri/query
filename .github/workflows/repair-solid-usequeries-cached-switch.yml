@@ -1,0 +1,241 @@
+name: Repair Solid useQueries cached client switch
+
+on:
+  push:
+    branches:
+      - repair/solid-usequeries-cached-switch-20260919
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TARGET_BRANCH: fix/solid-usequeries-queryclient-switch
+      EXPECTED_HEAD: d4dce74b5a7afcf702175374467358b290adb412
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out exact reviewed head
+        shell: bash
+        run: |
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
+          git checkout --detach "$EXPECTED_HEAD"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Apply review regression and fix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('packages/solid-query/src/useQueries.ts')
+          text = source.read_text()
+          old = '''  let taskQueue: Array<() => void> = []
+  createComputed(
+    on(
+      observer,
+      (nextObserver) => {
+        taskQueue = []
+        setState(
+          nextObserver.getOptimisticResult(
+            defaultedQueries(),
+            (queriesOptions() as QueriesObserverOptions<TCombinedResult>)
+              .combine,
+          )[1](),
+        )
+      },
+      { defer: true },
+    ),
+  )
+
+  createRenderEffect(
+'''
+          new = '''  let taskQueue: Array<() => void> = []
+
+  createRenderEffect(
+'''
+          assert text.count(old) == 1, text.count(old)
+          text = text.replace(old, new)
+
+          marker = '''  batch(() => {
+    const dataResources_ = dataResources()
+    for (let index = 0; index < dataResources_.length; index++) {
+      const dataResource = dataResources_[index]!
+      dataResource[1].mutate(() => unwrap(state[index]!.data))
+      dataResource[1].refetch()
+    }
+  })
+
+  const subscribeToObserver = () => {
+'''
+          replacement = '''  batch(() => {
+    const dataResources_ = dataResources()
+    for (let index = 0; index < dataResources_.length; index++) {
+      const dataResource = dataResources_[index]!
+      dataResource[1].mutate(() => unwrap(state[index]!.data))
+      dataResource[1].refetch()
+    }
+  })
+
+  createComputed(
+    on(
+      observer,
+      (nextObserver) => {
+        taskQueue = []
+        const nextResult = nextObserver.getOptimisticResult(
+          defaultedQueries(),
+          (queriesOptions() as QueriesObserverOptions<TCombinedResult>).combine,
+        )[1]()
+
+        batch(() => {
+          setState(nextResult)
+          const dataResources_ = dataResources()
+          for (let index = 0; index < dataResources_.length; index++) {
+            const dataResource = dataResources_[index]!
+            dataResource[1].mutate(() => unwrap(state[index]!.data))
+            dataResource[1].refetch()
+          }
+        })
+      },
+      { defer: true },
+    ),
+  )
+
+  const subscribeToObserver = () => {
+'''
+          assert text.count(marker) == 1, text.count(marker)
+          source.write_text(text.replace(marker, replacement))
+
+          test_path = Path('packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx')
+          test_text = test_path.read_text()
+          closing = '''    queryClient2.clear()
+  })
+})'''
+          added = '''    queryClient2.clear()
+  })
+
+  it('should expose fresh cached data after the queryClient accessor changes', () => {
+    const queryClient1 = new QueryClient()
+    const queryClient2 = new QueryClient()
+    const queryKey = ['cached-client'] as const
+    const [client, setClient] = createSignal(queryClient1)
+
+    queryClient1.setQueryData(queryKey, 'client-1')
+    queryClient2.setQueryData(queryKey, 'client-2')
+
+    function Page() {
+      const queries = useQueries(
+        () => ({
+          queries: [{ queryKey, staleTime: Infinity }],
+        }),
+        client,
+      )
+
+      return (
+        <>
+          <div data-testid="cached-data">{String(queries[0].data)}</div>
+          <button onClick={() => setClient(queryClient2)}>switch cached client</button>
+        </>
+      )
+    }
+
+    const rendered = renderWithClient(queryClient1, () => <Page />)
+
+    expect(rendered.getByTestId('cached-data').textContent).toBe('client-1')
+
+    fireEvent.click(
+      rendered.getByRole('button', { name: 'switch cached client' }),
+    )
+
+    expect(rendered.getByTestId('cached-data').textContent).toBe('client-2')
+    expect(queryClient1.getQueryData(queryKey)).toBe('client-1')
+    expect(queryClient2.getQueryData(queryKey)).toBe('client-2')
+
+    rendered.unmount()
+    queryClient1.clear()
+    queryClient2.clear()
+  })
+})'''
+          assert test_text.count(closing) == 1, test_text.count(closing)
+          test_path.write_text(test_text.replace(closing, added))
+          PY
+          pnpm exec prettier --write packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx
+          git diff --check
+      - name: Commit exact candidate before validation
+        id: candidate
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx
+          git commit -m 'fix(solid-query): sync cached data on queryClient switch'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Review-head negative control
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          source=packages/solid-query/src/useQueries.ts
+          trap 'git checkout "$CANDIDATE_SHA" -- "$source"' EXIT
+          git show "$EXPECTED_HEAD:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/review.json > /tmp/review.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/review.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/review.json').read_text())
+          assertions={a['title']:a['status'] for a in r['testResults'][0]['assertionResults']}
+          assert assertions['should fetch through the current queryClient after the accessor changes']=='passed', assertions
+          assert assertions['should expose fresh cached data after the queryClient accessor changes']=='failed', assertions
+          PY
+          git checkout "$CANDIDATE_SHA" -- "$source"
+      - name: Focused final regression
+        run: pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx
+      - name: Full Solid Query validation
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache
+      - name: Generated docs and affected checks
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          pnpm run generate-docs
+          git diff --exit-code
+          pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2
+      - name: Final exact-tree audit and fast-forward push
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
+          git diff --check "$BASE_SHA...$CANDIDATE_SHA"
+          mapfile -t files < <(git diff --name-only "$BASE_SHA...$CANDIDATE_SHA")
+          test "${#files[@]}" -eq 3
+          printf '%s\n' "${files[@]}" | grep -Fx '.changeset/solid-queries-client-switch.md'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/solid-query/src/useQueries.ts'
+          pnpm exec prettier --check .changeset/solid-queries-client-switch.md packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx packages/solid-query/src/useQueries.ts
+          git push origin HEAD:"$TARGET_BRANCH"
