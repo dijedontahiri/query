@@ -1,0 +1,71 @@
+name: Validate Solid useMutation client switch
+
+on:
+  push:
+    branches:
+      - validation/solid-usemutation-36990bef
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      CANDIDATE_SHA: 36990befc39232df24b016b204d393f6d412487d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+      - name: Verify exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+          pnpm --version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Baseline negative control
+        shell: bash
+        run: |
+          git show "$BASE_SHA:packages/solid-query/src/useMutation.ts" > packages/solid-query/src/useMutation.ts
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx 2>&1 | tee /tmp/baseline.log
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -ne 0
+          grep -q "useMutation custom queryClient accessor" /tmp/baseline.log
+          git checkout "$CANDIDATE_SHA" -- packages/solid-query/src/useMutation.ts
+      - name: Focused regression on final tree
+        run: pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx
+      - name: Solid Query package validation
+        run: |
+          pnpm nx run @tanstack/solid-query:test:types:tscurrent --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache
+      - name: Affected validation
+        run: pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2
+      - name: Diff and formatting audit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff --check "$BASE_SHA...$CANDIDATE_SHA"
+          mapfile -t files < <(git diff --name-only "$BASE_SHA...$CANDIDATE_SHA")
+          printf '%s\n' "${files[@]}"
+          test "${#files[@]}" -eq 3
+          printf '%s\n' "${files[@]}" | grep -Fx '.changeset/solid-mutation-client-switch.md'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/solid-query/src/__tests__/useMutation.queryClient.test.tsx'
+          printf '%s\n' "${files[@]}" | grep -Fx 'packages/solid-query/src/useMutation.ts'
+          pnpm prettier --experimental-cli --check .changeset/solid-mutation-client-switch.md packages/solid-query/src/__tests__/useMutation.queryClient.test.tsx packages/solid-query/src/useMutation.ts
