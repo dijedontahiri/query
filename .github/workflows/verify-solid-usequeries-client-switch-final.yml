@@ -1,0 +1,98 @@
+name: Verify Solid useQueries queryClient switch final
+on:
+  push:
+    branches: [validate/solid-usequeries-client-switch-final-20260919]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      NX_DAEMON: false
+      NX_NO_CLOUD: true
+      NX_TUI: false
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      CANDIDATE_SHA: cf8661b6705bc6587e511985683b798aa2754d28
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: cf8661b6705bc6587e511985683b798aa2754d28
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - name: Install dependencies and verify immutable source
+        id: install
+        run: |
+          npm install --global pnpm@11.9.0
+          pnpm install --frozen-lockfile
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
+      - name: Generated docs are reproducible
+        run: |
+          pnpm run generate-docs > /tmp/generate-docs.log 2>&1 || { tail -n 220 /tmp/generate-docs.log; exit 1; }
+          git diff --check
+          git diff --exit-code
+      - name: Build query-core
+        id: prerequisites
+        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
+      - name: Baseline failure and final focused regression
+        run: |
+          source=packages/solid-query/src/useQueries.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/before.json > /tmp/before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/before.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/before.json').read_text())
+          assert r['numTotalTests']==1 and r['numFailedTests']==1 and r['numPassedTests']==0, r
+          a=r['testResults'][0]['assertionResults']
+          assert len(a)==1 and a[0]['title']=='should fetch through the current queryClient after the accessor changes' and a[0]['status']=='failed', a
+          PY
+          git restore -- "$source"
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/after.json > /tmp/after.log 2>&1
+          cat /tmp/after.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/after.json').read_text())
+          assert r['success'] and r['numTotalTests']==1 and r['numPassedTests']==1 and r['numFailedTests']==0, r
+          PY
+      - name: Solid unit and type suites
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache > /tmp/solid-lib.log 2>&1 || { tail -n 220 /tmp/solid-lib.log; exit 1; }
+          tail -n 60 /tmp/solid-lib.log
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache > /tmp/solid-types.log 2>&1 || { tail -n 220 /tmp/solid-types.log; exit 1; }
+          tail -n 60 /tmp/solid-types.log
+      - name: Solid lint build and publication
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache > /tmp/lint.log 2>&1 || { tail -n 180 /tmp/lint.log; exit 1; }
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache > /tmp/build.log 2>&1 || { tail -n 180 /tmp/build.log; exit 1; }
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache > /tmp/publish.log 2>&1 || { tail -n 180 /tmp/publish.log; exit 1; }
+      - name: Required root PR checks
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2 > /tmp/test-pr.log 2>&1 || { tail -n 260 /tmp/test-pr.log; exit 1; }
+          tail -n 100 /tmp/test-pr.log
+      - name: Final formatting scope and exact-head audit
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm exec prettier --check packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+          git diff --check
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | wc -l)" -eq 3
+          test -f .changeset/solid-queries-client-switch.md
+          git diff --name-only "$BASE_SHA" HEAD
