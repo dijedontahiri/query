@@ -1,0 +1,122 @@
+name: Verify Solid useMutation review fix
+on:
+  push:
+    branches: [validate/solid-usemutation-review-fix-20260919]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      NX_DAEMON: false
+      NX_NO_CLOUD: true
+      NX_TUI: false
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      PREVIOUS_CANDIDATE_SHA: 36990befc39232df24b016b204d393f6d412487d
+      CANDIDATE_SHA: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - name: Install dependencies and verify immutable source
+        id: install
+        run: |
+          npm install --global pnpm@11.9.0
+          pnpm install --frozen-lockfile
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
+          test "$(git rev-parse "$PREVIOUS_CANDIDATE_SHA")" = "$PREVIOUS_CANDIDATE_SHA"
+      - name: Generated docs are reproducible
+        run: |
+          pnpm run generate-docs > /tmp/generate-docs.log 2>&1 || { tail -n 220 /tmp/generate-docs.log; exit 1; }
+          git diff --check
+          git diff --exit-code
+      - name: Build query-core
+        id: prerequisites
+        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
+      - name: Upstream baseline proves original client-switch bug
+        run: |
+          source=packages/solid-query/src/useMutation.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/base.json > /tmp/base.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/base.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/base.json').read_text())
+          assert r['numTotalTests']==3 and r['numFailedTests']==1 and r['numPassedTests']==2, r
+          failed=[a for t in r['testResults'] for a in t['assertionResults'] if a['status']=='failed']
+          assert [a['title'] for a in failed]==['should use the current queryClient after the accessor changes'], failed
+          PY
+          git restore -- "$source"
+      - name: Previous PR head reproduces callback regression
+        run: |
+          source=packages/solid-query/src/useMutation.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$PREVIOUS_CANDIDATE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/previous.json > /tmp/previous.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/previous.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/previous.json').read_text())
+          assert r['numTotalTests']==3 and r['numFailedTests']==1 and r['numPassedTests']==2, r
+          failed=[a for t in r['testResults'] for a in t['assertionResults'] if a['status']=='failed']
+          assert [a['title'] for a in failed]==['should preserve per-call callbacks for an in-flight mutation after switching clients'], failed
+          PY
+          git restore -- "$source"
+      - name: Final focused regressions
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/final.json > /tmp/final.log 2>&1
+          cat /tmp/final.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('/tmp/final.json').read_text())
+          assert r['success'] and r['numTotalTests']==3 and r['numPassedTests']==3 and r['numFailedTests']==0, r
+          PY
+      - name: Solid unit and type suites
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache > /tmp/solid-lib.log 2>&1 || { tail -n 220 /tmp/solid-lib.log; exit 1; }
+          tail -n 60 /tmp/solid-lib.log
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache > /tmp/solid-types.log 2>&1 || { tail -n 220 /tmp/solid-types.log; exit 1; }
+          tail -n 60 /tmp/solid-types.log
+      - name: Solid lint build and publication
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache > /tmp/lint.log 2>&1 || { tail -n 180 /tmp/lint.log; exit 1; }
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache > /tmp/build.log 2>&1 || { tail -n 180 /tmp/build.log; exit 1; }
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache > /tmp/publish.log 2>&1 || { tail -n 180 /tmp/publish.log; exit 1; }
+      - name: Required root PR checks
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2 > /tmp/test-pr.log 2>&1 || { tail -n 260 /tmp/test-pr.log; exit 1; }
+          tail -n 100 /tmp/test-pr.log
+      - name: Final formatting scope and exact-head audit
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm exec prettier --check packages/solid-query/src/useMutation.ts packages/solid-query/src/__tests__/useMutation.queryClient.test.tsx .changeset/solid-mutation-client-switch.md
+          git diff --check
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | wc -l)" -eq 3
+          test -f .changeset/solid-mutation-client-switch.md
+          git diff --name-only "$BASE_SHA" HEAD
