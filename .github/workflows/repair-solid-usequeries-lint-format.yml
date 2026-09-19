@@ -1,0 +1,73 @@
+name: Repair Solid useQueries lint and format
+
+on:
+  push:
+    branches:
+      - repair/solid-usequeries-lint-format-20260919
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      TARGET_BRANCH: fix/solid-usequeries-queryclient-switch
+      EXPECTED_HEAD: b47c2fbc3f6a373a21bfb1db456f670f2fb29365
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check out exact target head
+        shell: bash
+        run: |
+          git fetch origin "$TARGET_BRANCH"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
+          git checkout --detach "$EXPECTED_HEAD"
+      - name: Apply focused lint correction and repository formatting
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx')
+          text = path.read_text()
+          old = "String(queries[0]?.data ?? 'pending')"
+          new = "String(queries[0].data ?? 'pending')"
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new))
+          PY
+          npx --yes prettier@3.8.1 --write packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+          git diff --check
+          git diff -- packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify focused and package checks before publication
+        shell: bash
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache
+          pnpm exec prettier --check packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+          git diff --check
+      - name: Commit and fast-forward push
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+          git commit -m 'test(solid-query): satisfy client-switch validation'
+          git push origin HEAD:"$TARGET_BRANCH"
