@@ -1,0 +1,129 @@
+name: Verify final Solid useMutation queryClient switch
+on:
+  push:
+    branches: [validate/solid-usemutation-client-switch-v3-20260919]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.repository == 'dijedontahiri/query'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      NX_DAEMON: false
+      NX_NO_CLOUD: true
+      NX_TUI: false
+      BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
+      CANDIDATE_SHA: 94dbb42b20e49d29436d94cddd64d4b9cd7dfadb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 94dbb42b20e49d29436d94cddd64d4b9cd7dfadb
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .nvmrc
+      - name: Install pinned dependencies and verify exact checkout
+        id: install
+        run: |
+          npm install --global pnpm@11.1.0
+          pnpm install --frozen-lockfile
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
+      - name: Verify generated reference docs remain reproducible
+        id: docs
+        run: |
+          pnpm run generate-docs > /tmp/generate-docs.log 2>&1 || { tail -n 220 /tmp/generate-docs.log; exit 1; }
+          git diff --check
+          git diff --exit-code
+      - name: Build query-core dependency through Nx
+        id: prerequisites
+        run: pnpm nx run @tanstack/query-core:compile --skip-nx-cache
+      - name: Prove baseline regression and fixed behavior
+        id: regression
+        run: |
+          source=packages/solid-query/src/useMutation.ts
+          trap 'git restore -- "$source"' EXIT
+          git show "$BASE_SHA:$source" > "$source"
+          set +e
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/solid-before.json > /tmp/solid-before.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/solid-before.log
+          test "$status" -ne 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/solid-before.json').read_text())
+          assert result['numTotalTests'] == 1, result
+          assert result['numFailedTests'] == 1, result
+          assert result['numPassedTests'] == 0, result
+          suites = result['testResults']
+          assert len(suites) == 1, suites
+          assert suites[0]['name'].endswith('useMutation.queryClient.test.tsx'), suites
+          cases = suites[0]['assertionResults']
+          assert len(cases) == 1, cases
+          assert cases[0]['title'] == 'should use the current queryClient after the accessor changes', cases
+          assert cases[0]['status'] == 'failed', cases
+          print('Verified baseline failure for Solid useMutation queryClient switch.')
+          PY
+          git restore -- "$source"
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useMutation.queryClient.test.tsx --run --reporter=json --outputFile=/tmp/solid-after.json > /tmp/solid-after.log 2>&1
+          cat /tmp/solid-after.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('/tmp/solid-after.json').read_text())
+          assert result['success'], result
+          assert result['numTotalTests'] == 1 and result['numPassedTests'] == 1, result
+          assert result['numFailedTests'] == 0, result
+          print('Verified final focused regression success.')
+          PY
+      - name: Complete Solid package unit and type suites
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache > /tmp/solid-tests.log 2>&1 || { tail -n 220 /tmp/solid-tests.log; exit 1; }
+          tail -n 60 /tmp/solid-tests.log
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache > /tmp/solid-types.log 2>&1 || { tail -n 220 /tmp/solid-types.log; exit 1; }
+          tail -n 60 /tmp/solid-types.log
+      - name: Solid package lint, build and publication checks
+        if: always() && steps.prerequisites.outcome == 'success'
+        run: |
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache > /tmp/solid-lint.log 2>&1 || { tail -n 180 /tmp/solid-lint.log; exit 1; }
+          tail -n 35 /tmp/solid-lint.log
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache > /tmp/solid-build.log 2>&1 || { tail -n 180 /tmp/solid-build.log; exit 1; }
+          tail -n 35 /tmp/solid-build.log
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache > /tmp/solid-publish.log 2>&1 || { tail -n 180 /tmp/solid-publish.log; exit 1; }
+          tail -n 35 /tmp/solid-publish.log
+      - name: Required root PR checks on exact final tree
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2 > /tmp/test-pr.log 2>&1 || { tail -n 260 /tmp/test-pr.log; exit 1; }
+          tail -n 100 /tmp/test-pr.log
+      - name: Final diff, formatting, changeset and exact-head audit
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          pnpm exec prettier --check \
+            packages/solid-query/src/useMutation.ts \
+            packages/solid-query/src/__tests__/useMutation.queryClient.test.tsx \
+            .changeset/solid-mutation-client-switch.md
+          git diff --check
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git diff --name-only "$BASE_SHA" HEAD | wc -l)" -eq 3
+          test "$(git diff --name-only "$BASE_SHA" HEAD | sort | uniq | wc -l)" -eq 3
+          test -f .changeset/solid-mutation-client-switch.md
+          git diff --name-only "$BASE_SHA" HEAD
+      - name: Save verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: solid-usemutation-client-switch-v3-evidence
+          path: |
+            /tmp/solid-*.json
+            /tmp/solid-*.log
+            /tmp/test-pr.log
+            /tmp/generate-docs.log
+          retention-days: 14
