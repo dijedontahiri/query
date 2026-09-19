@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 45
     env:
       BASE_SHA: d346e85f0144eb9b991e6e1665b22f4574de9751
-      CANDIDATE_SHA: 36990befc39232df24b016b204d393f6d412487d
+      CANDIDATE_SHA: a7fbcca77e452963349e5f8ab587c6ea0bf9bb03
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,16 +44,21 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           test "$code" -ne 0
-          grep -q "useMutation custom queryClient accessor" /tmp/baseline.log
+          grep -q "should use the current queryClient after the accessor changes" /tmp/baseline.log
           git checkout "$CANDIDATE_SHA" -- packages/solid-query/src/useMutation.ts
       - name: Focused regression on final tree
         run: pnpm nx run @tanstack/solid-query:test:lib -- useMutation.queryClient.test.tsx
-      - name: Solid Query package validation
+      - name: Solid Query full validation
         run: |
-          pnpm nx run @tanstack/solid-query:test:types:tscurrent --skip-nx-cache
-          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
-          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache
           pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:build --skip-nx-cache
+          pnpm nx run @tanstack/solid-query:test:build --skip-nx-cache
+      - name: Generated docs audit
+        run: |
+          pnpm run generate-docs
+          git diff --exit-code
       - name: Affected validation
         run: pnpm run test:pr --base="$BASE_SHA" --head="$CANDIDATE_SHA" --skip-nx-cache --parallel=2
       - name: Diff and formatting audit
