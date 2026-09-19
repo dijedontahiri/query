@@ -27,7 +27,7 @@ jobs:
           git fetch origin "$TARGET_BRANCH"
           test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
           git checkout --detach "$EXPECTED_HEAD"
-      - name: Apply focused lint correction and repository formatting
+      - name: Apply focused lint correction
         shell: bash
         run: |
           python - <<'PY'
@@ -39,9 +39,7 @@ jobs:
           assert text.count(old) == 1, text.count(old)
           path.write_text(text.replace(old, new))
           PY
-          npx --yes prettier@3.8.1 --write packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
           git diff --check
-          git diff -- packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
       - uses: actions/setup-node@v4
         with:
           node-version: 24.16.0
@@ -51,9 +49,12 @@ jobs:
           corepack prepare pnpm@11.9.0 --activate
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify focused and package checks before publication
+      - name: Format and verify repair before publication
         shell: bash
         run: |
+          pnpm exec prettier --write packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
+          git diff --check
+          git diff -- packages/solid-query/src/useQueries.ts packages/solid-query/src/__tests__/useQueries.queryClient.test.tsx .changeset/solid-queries-client-switch.md
           pnpm nx run @tanstack/solid-query:test:lib --skip-nx-cache -- useQueries.queryClient.test.tsx
           pnpm nx run @tanstack/solid-query:test:types --skip-nx-cache
           pnpm nx run @tanstack/solid-query:test:eslint --skip-nx-cache
